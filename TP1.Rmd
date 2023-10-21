@@ -1,0 +1,168 @@
+---
+title: "TP1_IAU23"
+author: "Lara"
+date: "2023-10-20"
+output: html_document
+---
+
+
+```{r}
+library(tidyverse)
+library(ggmap)
+library(rgdal)
+library(sf)
+```
+
+La idea propuesta es unir la base de datos de la ubicacion de las localidades del país, a los establecimientos productivos para tomar dimensión de su distribución en el territorio según los departamentos. Para ello se seleccionan los departamentos de 100 localidades de tamaño medio (entre 20.000 y 200.000). 
+
+#Levanto bases 
+*1. Localidades 3526*
+```{r}
+cienciudades <- st_read("100ciudades_nuevo/cienciudades25_07.shp")
+```
+
+
+*2. Establecimientos*
+```{r}
+distr_establ <- read.csv("distribucion_establecimientos.csv")
+```
+
+
+
+```{r}
+table(distr_establ$provincia)
+```
+Para unir las bases vamos a crear una columna para poder unirlas. 
+
+## Correciones
+*Reemplazar "Tierra del Fuego" por "Tierra del Fuego, Antártida e Islas del Atlántico Sur"*
+```{r}
+distr_establ$provincia <- ifelse(distr_establ$provincia == "Tierra Del Fuego", "Tierra del Fuego, Antártida e Islas del Atlántico Sur", distr_establ$provincia)
+```
+
+*Correcion departamentos*
+```{r}
+cienciudades <- cienciudades %>% 
+  mutate(dprtmnt = ifelse(dprtmnt == "San Juan" & provinc == "San Juan", "Capital", dprtmnt))
+```
+
+```{r}
+cienciudades <- cienciudades %>% 
+  mutate(dprtmnt = ifelse(dprtmnt == "Coronel Rosales" & provinc == "Buenos Aires", "Coronel de Marina Leonardo Rosales", dprtmnt))
+```
+
+##armar direccion para ambas 
+```{r}
+establecimientos_direccion <- distr_establ %>% 
+  mutate(direccion_est = paste(provincia, departamento, sep = ", "))
+```
+
+```{r}
+cienciudades_direccion <- cienciudades %>% 
+    mutate(direccion_ciudades = paste(provinc, dprtmnt, sep = ", "))
+```
+
+## Agrupamos los IDs
+
+```{r}
+test <- establecimientos_direccion %>%
+  group_by(direccion_est) %>%
+  summarize(cantidad_ids = n_distinct(ID))
+```
+
+## Function to find the index of the closest match for each city name
+
+```{r}
+find_closest_match <- function(city_name, target_names) {
+  distances <- stringdist::stringdist(city_name, target_names, method = "jw")
+  closest_match_index <- which.min(distances)
+  return(closest_match_index)
+}
+```
+
+
+## Agregamos una columna de identificador único a cienciudades_direccion y test
+```{r}
+cienciudades_direccion$id <- 1:nrow(cienciudades_direccion)
+```
+
+```{r}
+test$id <- 1:nrow(test)
+```
+
+## Encontramos los índices de la coincidencia más cercana en test
+```{r}
+cienciudades_direccion$closest_match_index <- sapply(cienciudades_direccion$direccion_ciudades, find_closest_match, target_names = test$direccion_est)
+```
+
+
+## Perform left join based on the closest match indices
+
+```{r}
+join_data <- left_join(cienciudades_direccion, test, by = c("closest_match_index" = "id"))
+```
+
+Mantengo el direccion_est para futuras joins
+
+```{r}
+cienciudades_establecimientos <- join_data %>% 
+ select(region, provinc, dprtmnt, localdd, tp_d_cc, clsfccn, geometry, cantidad_ids, direccion_est, geometry)
+```
+
+#PARTE 2: Actividades
+
+##1. Agrupo los establecimientos por la actividad primaria (letra)
+
+```{r}
+resultados_letra <- distr_establ %>%
+  group_by(departamento, provincia, letra) %>%
+  summarize(cantidad_establecimientos = n())
+```
+
+##2. Creo la dirección para esta base con las letras para luego empararla con los 100 
+```{r}
+resultados_letra <- resultados_letra %>% 
+  mutate(direccion_rtdo = paste(provincia, departamento, sep = ", "))
+```
+
+
+#Filtro 
+###3. Filtrar los departamentos que a filtrar "departamentos_filtrar" según las direcciones resultantes de la base común
+
+```{r}
+direcciones_a_filtrar <- cienciudades_establecimientos$direccion_est
+```
+
+```{r}
+resultados_letra_filtrados <- resultados_letra %>%
+  filter(direccion_rtdo %in% direcciones_a_filtrar)
+```
+
+### 4. Luego, agrupar los datos por departamento y letra,  y cuento el número de IDs en cada grupo
+```{r}
+resultados_letra_agrupados <- resultados_letra_filtrados %>%
+  group_by(direccion_rtdo, letra) %>%
+  summarize(cantidad_establecimientos = sum(cantidad_establecimientos))
+```
+## A continuación, ordeno los datos agrupados por departamento y por cantidad_establecimientos en orden descendente
+
+```{r}
+resultados_letra_agrupados <- resultados_letra_agrupados %>%
+  arrange(direccion_rtdo, desc(cantidad_establecimientos))
+```
+
+## Finalmente, me quedo con las 3 categorías con más establecimientos de cada departamento para un analisis particular de estos casos.  
+```{r}
+resultados_finales <- resultados_letra_agrupados %>%
+  group_by(direccion_rtdo) %>%
+  slice_head(n = 3)
+```
+
+Por ultimo, realizo un pivot para analizar estos casos según la actividad
+##Pivot
+
+```{r}
+Pivot <- resultados_finales %>% pivot_wider(names_from = letra , values_from = cantidad_establecimientos)
+```
+
+
